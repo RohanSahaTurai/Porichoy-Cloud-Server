@@ -85,7 +85,7 @@ void HandleImageMssg(mqtt::const_message_ptr& msg, mqtt::async_client& client_)
     else
         client_.publish(RESULT_TOPIC, result.data(), result.size());
 
-    std::cout << "Acknowledgment Delivered\n";
+    std::cout << "Acknowledgment Delivered\n" << std::endl;
 }
 
 
