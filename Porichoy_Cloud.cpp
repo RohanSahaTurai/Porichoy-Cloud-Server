@@ -7,14 +7,20 @@
 
 #define RECEIVED_IMAGE_NAME "temp.jpg"
 
+// the shell script to run the face recognition from the program
+// 2>&1 redirects the stderr to stdout
+// https://stackoverflow.com/questions/818255/in-the-shell-what-does-21-mean
+#define FACE_RECOGNITION_SHELL "./face_recognition Database temp.jpg 2>&1"
+
 typedef struct topic
 {
     std::string topic_name;
-    void (*handler) (mqtt::const_message_ptr);
+    void (*handler) (mqtt::const_message_ptr&, mqtt::async_client&);
 }topic_t;
 
 const std::string SERVER_ADDRESS("142.93.62.203:1883");
 const std::string CLIENT_ID("Porichoy_Cloud");
+const std::string RESULT_TOPIC("Result");
 
 const int NB_TOPICS_SUBSCRIBED = 1;
 const int QoS = 2;  // Quality of service
@@ -22,8 +28,10 @@ const int QoS = 2;  // Quality of service
 /////////////////////////////////////////////////////////////////////////////////////////////////
 //      Handler for Image topic
 /////////////////////////////////////////////////////////////////////////////////////////////////
-void HandleImageMssg(mqtt::const_message_ptr msg)
+void HandleImageMssg(mqtt::const_message_ptr& msg, mqtt::async_client& client_) 
 {   
+    /* --- Save the image as jpg ---*/
+
     FILE* fp = fopen(RECEIVED_IMAGE_NAME, "wb");
 
     if (!fp)
@@ -37,6 +45,47 @@ void HandleImageMssg(mqtt::const_message_ptr msg)
     std::cout << "Image saved as " << RECEIVED_IMAGE_NAME << "\n\n";
 
     fclose(fp);
+
+    /* --- Run the face recognition from the shell --- */
+    
+    std::string result;
+    char buffer[256];
+
+    // open a process by creating a pipe, forking, and invoking the shell
+    FILE* pipe = popen(FACE_RECOGNITION_SHELL, "r");
+
+    if (!pipe)
+    {
+        std::cerr << "Error creating pipe" << std::endl;
+        exit(-1);
+    }
+
+    // Read the pipe till the end of file
+    while (!feof(pipe))
+    {   
+        if (fgets(buffer, 256, pipe) != NULL)
+            result.append(buffer);
+    }
+
+    std::cout << "Face Recognition Results: " << result << "\n";
+
+    // Close the pipe
+    pclose(pipe);
+
+    /* --- Parse the results --- */
+    // TODO: Error checking for multiple faces.
+
+    const std::string negative("NO MATCH\n");
+
+    // no match found or result is empty
+    if(result.empty() || result.find("unknown_person") != std::string::npos)
+        client_.publish(RESULT_TOPIC, negative.data(), negative.size());
+    
+    // otherwise a match has been found
+    else
+        client_.publish(RESULT_TOPIC, result.data(), result.size());
+
+    std::cout << "Acknowledgment Delivered\n";
 }
 
 
@@ -173,10 +222,17 @@ class Callback : public virtual mqtt::callback, public virtual mqtt::iaction_lis
             {
                 if (Topics[i].topic_name.compare(msg->get_topic()) == 0)
                 {
-                    (*(Topics[i].handler))(msg);
+                    (*(Topics[i].handler))(msg, client_);
                     break;
                 }
             }
+        }
+
+        // publish message delivered
+        void delivery_complete(mqtt::delivery_token_ptr tok) override
+        {
+		    std::cout << "\n\t[Delivery complete for token: "
+			          << (tok ? tok->get_message_id() : -1) << "]" << std::endl;
         }
     
     public:
