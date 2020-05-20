@@ -7,11 +7,50 @@
 
 #define RECEIVED_IMAGE_NAME "temp.jpg"
 
+typedef struct topic
+{
+    std::string topic_name;
+    void (*handler) (mqtt::const_message_ptr);
+}topic_t;
+
 const std::string SERVER_ADDRESS("142.93.62.203:1883");
 const std::string CLIENT_ID("Porichoy_Cloud");
-const std::string TOPIC("Image");
 
-const int QoS = 1;  // Quality of service
+const int NB_TOPICS_SUBSCRIBED = 1;
+const int QoS = 2;  // Quality of service
+
+/////////////////////////////////////////////////////////////////////////////////////////////////
+//      Handler for Image topic
+/////////////////////////////////////////////////////////////////////////////////////////////////
+void HandleImageMssg(mqtt::const_message_ptr msg)
+{   
+    FILE* fp = fopen(RECEIVED_IMAGE_NAME, "wb");
+
+    if (!fp)
+    {
+        std::cerr << "Error creating image file" << std::endl;
+        exit(-1);
+    }
+
+    fwrite(msg->get_payload().data(), 1, msg->get_payload().size(), fp);
+
+    std::cout << "Image saved as " << RECEIVED_IMAGE_NAME << "\n\n";
+
+    fclose(fp);
+}
+
+
+/////////////////////////////////////////////////////////////////////////////////////////////////
+//      Topics subscribed
+/////////////////////////////////////////////////////////////////////////////////////////////////
+const topic_t Topics[NB_TOPICS_SUBSCRIBED] = 
+{
+    {
+        .topic_name = std::string("Image"),
+        .handler = &HandleImageMssg
+    }
+};
+
 
 /////////////////////////////////////////////////////////////////////////////////////////////////
 //      Action Listener class for asynchronous actions
@@ -109,38 +148,35 @@ class Callback : public virtual mqtt::callback, public virtual mqtt::iaction_lis
         {
            	std::cout << "\nConnection success" << std::endl;
             
-            std::cout << "\nSubscribing to topic '" << TOPIC << "'\n"
+            // Subscribe to all the topics
+            for (int i = 0; i < NB_TOPICS_SUBSCRIBED; i++)
+            {
+                std::cout << "\nSubscribing to topic '" << Topics[i].topic_name << "'\n"
 			          << "\tfor client " << CLIENT_ID
-			          << " using QoS" << QoS << "\n"
-			          << "\nPress Q<Enter> to quit\n" << std::endl;
-            
-            client_.subscribe(TOPIC, QoS, nullptr, listener_);
-        }
+			          << " using QoS" << QoS << "\n";
 
+                client_.subscribe(Topics[i].topic_name, QoS, nullptr, listener_);
+            }
+
+            std::cout << "\nPress Q<Enter> to quit\n" << std::endl;
+        }
 
         // callback for when a message arrives
         void message_arrived(mqtt::const_message_ptr msg) override
         {
-            size_t size = msg->get_payload().size();
-
             std::cout << "Message arrived" << std::endl;
-		    std::cout << "\ttopic: '" << msg->get_topic() << "'" << std::endl;
-		    std::cout << "\tsize: " << size << " bytes\n" << std::endl;
+		    std::cout << "\ttopic: '" << msg->get_topic() << "'\n";
+		    std::cout << "\tsize: " << msg->get_payload().size() << " bytes\n\n";
 
-
-            FILE* fp = fopen(RECEIVED_IMAGE_NAME, "wb");
-
-            if (!fp)
+            // call the appropriate message handler
+            for (int i = 0; i < NB_TOPICS_SUBSCRIBED; i++)
             {
-                std::cerr << "Error creating image file" << std::endl;
-                exit(-1);
+                if (Topics[i].topic_name.compare(msg->get_topic()) == 0)
+                {
+                    (*(Topics[i].handler))(msg);
+                    break;
+                }
             }
-
-            fwrite(msg->get_payload().data(), 1, size, fp);
-
-            std::cout << "Image saved as " << RECEIVED_IMAGE_NAME << "\n";
-
-            fclose(fp);
         }
     
     public:
@@ -149,6 +185,9 @@ class Callback : public virtual mqtt::callback, public virtual mqtt::iaction_lis
                             : client_(client), listener_("Subscription"){}
 };
 
+/////////////////////////////////////////////////////////////////////////////////////////////////
+//      Main 
+/////////////////////////////////////////////////////////////////////////////////////////////////
 int main(int argc, char* argv[])
 {
     // set up the connection options
@@ -175,7 +214,7 @@ int main(int argc, char* argv[])
 	catch (const mqtt::exception& except) 
     {
 		std::cerr << "\nERROR: Unable to connect to MQTT server: '"
-			<< SERVER_ADDRESS << "'" << std::endl;
+			      << SERVER_ADDRESS << "'" << std::endl;
         std::cerr << "Error: " << except.what() << std::endl;
 		exit(-1);
 	}
