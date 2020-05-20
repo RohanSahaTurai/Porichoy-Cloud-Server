@@ -78,9 +78,13 @@ void HandleImageMssg(mqtt::const_message_ptr& msg, mqtt::async_client& client_)
     const std::string negative("NO MATCH\n");
 
     // no match found or result is empty
-    if(result.empty() || result.find("unknown_person") != std::string::npos)
+    if(result.find("unknown_person") != std::string::npos   || 
+       result.find("no_persons_found") != std::string::npos  ||
+       result.empty())
+    {   
         client_.publish(RESULT_TOPIC, negative.data(), negative.size());
-    
+    }
+
     // otherwise a match has been found
     else
         client_.publish(RESULT_TOPIC, result.data(), result.size());
