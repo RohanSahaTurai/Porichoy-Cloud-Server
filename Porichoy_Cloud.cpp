@@ -2,22 +2,27 @@
 #include <stdio.h>
 #include <string.h>
 #include <thread>
-#include <chrono>
+#include <time.h>
+#include <assert.h>
+
 #include <mqtt/async_client.h>
+
+#include <bsoncxx/builder/stream/document.hpp>
+#include <bsoncxx/json.hpp>
+
+#include <mongocxx/client.hpp>
+#include <mongocxx/instance.hpp>
+
 
 #define RECEIVED_IMAGE_NAME "temp.jpg"
 
 // the shell script to run the face recognition from the program
 // 2>&1 redirects the stderr to stdout
-// https://stackoverflow.com/questions/818255/in-the-shell-what-does-21-mean
 #define FACE_RECOGNITION_SHELL "./face_recognition Database temp.jpg 2>&1"
 
-typedef struct topic
-{
-    std::string topic_name;
-    void (*handler) (mqtt::const_message_ptr&, mqtt::async_client&);
-}topic_t;
-
+/////////////////////////////////////////////////////////////////////////////////////////////////
+//      MQTT configuations
+/////////////////////////////////////////////////////////////////////////////////////////////////
 const std::string SERVER_ADDRESS("142.93.62.203:1883");
 const std::string CLIENT_ID("Porichoy_Cloud");
 const std::string RESULT_TOPIC("Result");
@@ -25,73 +30,15 @@ const std::string RESULT_TOPIC("Result");
 const int NB_TOPICS_SUBSCRIBED = 1;
 const int QoS = 2;  // Quality of service
 
-/////////////////////////////////////////////////////////////////////////////////////////////////
-//      Handler for Image topic
-/////////////////////////////////////////////////////////////////////////////////////////////////
-void HandleImageMssg(mqtt::const_message_ptr& msg, mqtt::async_client& client_) 
-{   
-    /* --- Save the image as jpg ---*/
+/* ----------- topic struct -------------*/
+typedef struct topic
+{
+    std::string topic_name;
+    void (*handler) (mqtt::const_message_ptr&, mqtt::async_client&);
+}topic_t;
 
-    FILE* fp = fopen(RECEIVED_IMAGE_NAME, "wb");
-
-    if (!fp)
-    {
-        std::cerr << "Error creating image file" << std::endl;
-        exit(-1);
-    }
-
-    fwrite(msg->get_payload().data(), 1, msg->get_payload().size(), fp);
-
-    std::cout << "Image saved as " << RECEIVED_IMAGE_NAME << "\n\n";
-
-    fclose(fp);
-
-    /* --- Run the face recognition from the shell --- */
-    
-    std::string result;
-    char buffer[256];
-
-    // open a process by creating a pipe, forking, and invoking the shell
-    FILE* pipe = popen(FACE_RECOGNITION_SHELL, "r");
-
-    if (!pipe)
-    {
-        std::cerr << "Error creating pipe" << std::endl;
-        exit(-1);
-    }
-
-    // Read the pipe till the end of file
-    while (!feof(pipe))
-    {   
-        if (fgets(buffer, 256, pipe) != NULL)
-            result.append(buffer);
-    }
-
-    std::cout << "Face Recognition Results: " << result << "\n";
-
-    // Close the pipe
-    pclose(pipe);
-
-    /* --- Parse the results --- */
-    // TODO: Error checking for multiple faces.
-
-    const std::string negative("NO MATCH\n");
-
-    // no match found or result is empty
-    if(result.find("unknown_person") != std::string::npos   || 
-       result.find("no_persons_found") != std::string::npos  ||
-       result.empty())
-    {   
-        client_.publish(RESULT_TOPIC, negative.data(), negative.size());
-    }
-
-    // otherwise a match has been found
-    else
-        client_.publish(RESULT_TOPIC, result.data(), result.size());
-
-    std::cout << "Acknowledgment Delivered\n" << std::endl;
-}
-
+/* --------- Function Prototype -------------*/
+void HandleImageMssg(mqtt::const_message_ptr& msg, mqtt::async_client& client_);
 
 /////////////////////////////////////////////////////////////////////////////////////////////////
 //      Topics subscribed
@@ -104,6 +51,70 @@ const topic_t Topics[NB_TOPICS_SUBSCRIBED] =
     }
 };
 
+/////////////////////////////////////////////////////////////////////////////////////////////////
+//      Database Class to store MongoDB databse
+/////////////////////////////////////////////////////////////////////////////////////////////////
+class MongoDB
+{
+    private:
+        //only once instance should be made throughout the whole program
+        static mongocxx::instance _instance;
+        //client to connect to an uri
+        mongocxx::client _client = mongocxx::client(mongocxx::uri{});
+        //database
+        mongocxx::database _db;
+        //collection
+        mongocxx::collection _collection;
+        //document builder
+        bsoncxx::builder::stream::document _document{};
+    
+    public:
+        //default constructor
+        MongoDB()
+        {
+            _db = _client["Porichoy"];
+            _collection = _db["Rohan"];
+        }
+
+        // constructor
+        MongoDB(const char* database, const char* collection)
+        {
+            _db = _client[database];
+            _collection = _db[collection];
+        }
+
+        // constructor
+        MongoDB(const char* uri, const char* database, const char* collection)
+        {
+            _client = mongocxx::client(mongocxx::uri(uri));
+            _db = _client[database];
+            _collection = _db[collection];
+        }
+
+        // store a document
+        void StoreDocument(const char* requestTime, const char* response)
+        {   
+            //clear the document
+            _document.clear();
+
+            //build the document
+            bsoncxx::document::value doc_value = _document
+                << "Request Time: "  << requestTime
+                << "Response: "      << response
+                << bsoncxx::builder::stream::finalize;
+            
+            _collection.insert_one(doc_value.view());
+
+            std::cout << "Document inserted into database\n";
+        }
+
+};
+
+// definition of the static instance 
+mongocxx::instance MongoDB::_instance{};
+
+/*-------------- Database Object ---------------*/
+MongoDB Database;
 
 /////////////////////////////////////////////////////////////////////////////////////////////////
 //      Action Listener class for asynchronous actions
@@ -295,4 +306,88 @@ int main(int argc, char* argv[])
     }
     
     return 0;
+}
+
+/////////////////////////////////////////////////////////////////////////////////////////////////
+//      Handler for Image topic
+/////////////////////////////////////////////////////////////////////////////////////////////////
+void HandleImageMssg(mqtt::const_message_ptr& msg, mqtt::async_client& client_) 
+{   
+    time_t rawTime = time(NULL);
+    struct tm *timeInfo = localtime(&rawTime);
+
+    /* --- Save the image as jpg ---*/
+
+    FILE* fp = fopen(RECEIVED_IMAGE_NAME, "wb");
+
+    if (!fp)
+    {
+        std::cerr << "Error creating image file" << std::endl;
+        exit(-1);
+    }
+
+    fwrite(msg->get_payload().data(), 1, msg->get_payload().size(), fp);
+
+    std::cout << "Image saved as " << RECEIVED_IMAGE_NAME << "\n\n";
+
+    fclose(fp);
+
+    /* --- Run the face recognition from the shell --- */
+    
+    std::string result;
+    char buffer[256];
+
+    // open a process by creating a pipe, forking, and invoking the shell
+    FILE* pipe = popen(FACE_RECOGNITION_SHELL, "r");
+
+    if (!pipe)
+    {
+        std::cerr << "Error creating pipe" << std::endl;
+        exit(-1);
+    }
+
+    // Read the pipe till the end of file
+    while (!feof(pipe))
+    {   
+        if (fgets(buffer, 256, pipe) != NULL)
+            result.append(buffer);
+    }
+
+    std::cout << "Face Recognition Results: " << result << "\n";
+
+    // Close the pipe
+    pclose(pipe);
+
+    /* --- Parse the results --- */
+    // TODO: Error checking for multiple faces.
+
+    const std::string negative("NO MATCH\n");
+
+    // no match found or result is empty
+    if(result.find("unknown_person") != std::string::npos   || 
+       result.find("no_persons_found") != std::string::npos  ||
+       result.empty())
+    {   
+        client_.publish(RESULT_TOPIC, negative.data(), negative.size());
+    }
+
+    // otherwise a match has been found
+    else
+        client_.publish(RESULT_TOPIC, result.data(), result.size());
+
+    std::cout << "Acknowledgment Delivered\n" << std::endl;
+
+    /* ------------- Store into Database ---------------------*/
+
+    char timeStr[80];
+
+    assert(strftime(timeStr, sizeof(timeStr), "%c", timeInfo));
+
+    // modify the result to be stored in the database
+    // remove "temp.jpg,""
+    result = result.erase(0, 9);
+    // remove the new line character at the end
+    result[result.length()-1] = '\0';
+
+    Database.StoreDocument(timeStr, result.c_str());
 }

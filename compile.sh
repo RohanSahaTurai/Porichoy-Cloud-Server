@@ -1,0 +1,1 @@
+c++ --std=c++11 Porichoy_Cloud.cpp -o Porichoy_Cloud $(pkg-config --cflags --libs libmongocxx) -lpaho-mqtt3as -lpaho-mqttpp3
