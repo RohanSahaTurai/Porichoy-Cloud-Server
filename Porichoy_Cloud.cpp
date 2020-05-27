@@ -105,7 +105,7 @@ class MongoDB
             
             _collection.insert_one(doc_value.view());
 
-            std::cout << "Document inserted into database\n";
+            std::cout << "Document inserted into database\n\n";
         }
 
 };
