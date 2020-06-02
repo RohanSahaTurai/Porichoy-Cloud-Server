@@ -99,8 +99,8 @@ class MongoDB
 
             //build the document
             bsoncxx::document::value doc_value = _document
-                << "Request Time: "  << requestTime
-                << "Response: "      << response
+                << "Request Time"  << requestTime
+                << "Response"      << response
                 << bsoncxx::builder::stream::finalize;
             
             _collection.insert_one(doc_value.view());
